@@ -11,7 +11,7 @@ if (args.Length < 2 || !DateTime.TryParse(args[0], out DateTime startDate) || !D
     endDate = new DateTime(2023, 4, 9);
 }
 
-var matchingFiles = new List<(string url, string fileName)>();
+var matchingFiles = new List<(string url, long fileName)>();
 var httpClient = new HttpClient();
 int totalSeconds = (int)(endDate - startDate).TotalSeconds;
 
@@ -22,15 +22,24 @@ for (int i = 0; i < totalSeconds; i++)
     var currentTimestamp = new DateTimeOffset(currentDate).ToUnixTimeSeconds();
 
     var url = $"https://kdhx.org/archive/files/{currentTimestamp}.mp3";
-    var fileName = $"{currentDate:yyyy-MM-dd HH.mm.ss}.mp3";
+    var fileName = currentTimestamp;
+
+    if (matchingFiles.Count > 0)
+    {
+        // check if the file 1 hour from the current time exists on the server
+        var nextDate = matchingFiles[matchingFiles.Count - 1].fileName + 3600;
+        if (currentTimestamp < nextDate)
+        {
+            continue;
+        }
+    }
+
     var task = CheckFileAsync(httpClient, url, fileName, matchingFiles);
     tasks.Add(task);
-    
-    // Add a delay of 100 milliseconds between requests to avoid rate limits
-    await Task.Delay(100);
+    await Task.Delay(25);
 }
 
-Task.WaitAll(tasks.ToArray());
+await Task.WhenAll(tasks);
 
 Console.WriteLine("files found: " + matchingFiles.Count);
 Console.WriteLine($"Files between {startDate} and {endDate}:");
@@ -39,7 +48,7 @@ foreach (var file in matchingFiles)
     Console.WriteLine($"{file.url} - {file.fileName}");
 }
 
-async Task CheckFileAsync(HttpClient httpClient, string url, string fileName, List<(string, string)> matchingFiles)
+async Task CheckFileAsync(HttpClient httpClient, string url, long fileName, List<(string, long)> matchingFiles)
 {
     try
     {
@@ -47,8 +56,26 @@ async Task CheckFileAsync(HttpClient httpClient, string url, string fileName, Li
 
         if (response.IsSuccessStatusCode)
         {
-            matchingFiles.Add((url, fileName));
-            Console.WriteLine($"{url} - {fileName}");
+
+            // check if the file 1 hour from the current time exists on the server
+
+            var nextTimestamp = fileName + 3600;
+            var nextUrl = $"https://kdhx.org/archive/files/{nextTimestamp}.mp3";
+            var nextResponse = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, nextUrl));
+
+            if (nextResponse.IsSuccessStatusCode)
+            {
+                lock (matchingFiles)
+                {
+                    matchingFiles.Add((url, fileName));
+                }
+                // turn filename from unix seconds into CDT string
+                var date = DateTimeOffset.FromUnixTimeSeconds(fileName).ToLocalTime();
+                Console.WriteLine($"{url} - {fileName} - {date}");
+
+
+
+            }
         }
     }
     catch (Exception ex)
