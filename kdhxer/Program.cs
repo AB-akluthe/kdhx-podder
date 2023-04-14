@@ -24,75 +24,121 @@ Proceed until you have 24 hours of files.
 
 */
 
+
 var matchingFiles = new List<(string url, long fileName)>();
 var httpClient = new HttpClient();
-int totalSeconds = (int)(endDate - startDate).TotalSeconds;
 
-var tasks = new List<Task>();
-for (int i = 0; i < totalSeconds; i++)
+// $"https://kdhx.org/archive/files/{currentTimestamp}.mp3";
+
+// iterate through each day between startDate and endDate
+for (DateTime current = startDate; current <= endDate; current = current.AddDays(1))
 {
-    var currentDate = startDate.AddSeconds(i);
-    var currentTimestamp = new DateTimeOffset(currentDate).ToUnixTimeSeconds();
 
-    var url = $"https://kdhx.org/archive/files/{currentTimestamp}.mp3";
-    var fileName = currentTimestamp;
+    var secondsToSearch = await GenerateFirstHourSearch(current);
 
-    if (matchingFiles.Count > 0)
+
+
+    // iterate through each unix second in the list
+    foreach (var currentTimestamp in secondsToSearch)
     {
-        // check if the file 1 hour from the current time exists on the server
-        var nextDate = matchingFiles[matchingFiles.Count - 1].fileName + 3600;
-        if (currentTimestamp < nextDate)
+        var url = $"https://kdhx.org/archive/files/{currentTimestamp}.mp3";
+
+        if (await CheckFileAsync(httpClient, url, currentTimestamp))
         {
-            continue;
+
+            matchingFiles.Add((url, currentTimestamp));
+            Console.WriteLine($"Found file at {url}");
+            break;
         }
+
     }
 
-    var task = CheckFileAsync(httpClient, url, fileName, matchingFiles);
-    tasks.Add(task);
-    await Task.Delay(25);
-}
-
-await Task.WhenAll(tasks);
-
-Console.WriteLine("files found: " + matchingFiles.Count);
-Console.WriteLine($"Files between {startDate} and {endDate}:");
-foreach (var file in matchingFiles)
-{
-    Console.WriteLine($"{file.url} - {file.fileName}");
-}
-
-async Task CheckFileAsync(HttpClient httpClient, string url, long fileName, List<(string, long)> matchingFiles)
-{
-    try
+    // once we have a file, see if there is 1 an hour after that
+    if (matchingFiles.Count > 0)
     {
-        var response = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, url));
+        var lastFile = matchingFiles[^1];
+        var nextFile = lastFile.fileName + 3600;
 
-        if (response.IsSuccessStatusCode)
+        var url = $"https://kdhx.org/archive/files/{nextFile}.mp3";
+
+        if (await CheckFileAsync(httpClient, url, nextFile))
         {
-
-            // check if the file 1 hour from the current time exists on the server
-
-            var nextTimestamp = fileName + 3600;
-            var nextUrl = $"https://kdhx.org/archive/files/{nextTimestamp}.mp3";
-            var nextResponse = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, nextUrl));
-
-            if (nextResponse.IsSuccessStatusCode)
+            matchingFiles.Add((url, nextFile));
+            Console.WriteLine($"Found file at {url}");
+        }else{
+            // check every second 5 minutes before and after
+            for (int i = 1; i <= 300; i++)
             {
-                lock (matchingFiles)
+                var urlBefore = $"https://kdhx.org/archive/files/{nextFile - i}.mp3";
+                var urlAfter = $"https://kdhx.org/archive/files/{nextFile + i}.mp3";
+
+                if (await CheckFileAsync(httpClient, urlBefore, nextFile - i))
                 {
-                    matchingFiles.Add((url, fileName));
+                    matchingFiles.Add((urlBefore, nextFile - i));
+                    Console.WriteLine($"Found file at {urlBefore}");
+                    break;
                 }
-                // turn filename from unix seconds into CDT string
-                var date = DateTimeOffset.FromUnixTimeSeconds(fileName).ToLocalTime();
-                Console.WriteLine($"{url} - {fileName} - {date}");
 
-
-
+                if (await CheckFileAsync(httpClient, urlAfter, nextFile + i))
+                {
+                    matchingFiles.Add((urlAfter, nextFile + i));
+                    Console.WriteLine($"Found file at {urlAfter}");
+                    break;
+                }
             }
         }
     }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"Error checking file at {url}: {ex.Message}");
-    }
+
+
+
 }
+
+
+    async Task<List<long>> GenerateFirstHourSearch(DateTime startDate)
+    {
+        // Generate a list of all unix Seconds between 00:00:00 and 1:00:00 CDT
+        // Set the time zone to Central Daylight Time (CDT)
+        TimeZoneInfo cdt = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
+
+        // Set the start and end times
+        DateTime start = new DateTime(2023, startDate.Month, startDate.Day, 0, 0, 0, DateTimeKind.Unspecified);
+        DateTime end = new DateTime(2023, 4, 14, 1, 0, 0, DateTimeKind.Unspecified);
+
+        // Convert the start and end times to the CDT time zone
+        start = TimeZoneInfo.ConvertTimeToUtc(start, cdt);
+        end = TimeZoneInfo.ConvertTimeToUtc(end, cdt);
+
+        // Generate the list of Unix seconds
+        List<long> unixSeconds = new List<long>();
+        for (DateTime current = start; current < end; current = current.AddSeconds(1))
+        {
+            unixSeconds.Add((long)(current - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds);
+        }
+
+        return unixSeconds;
+
+
+    }
+
+
+
+
+    async Task<bool> CheckFileAsync(HttpClient httpClient, string url, long fileName)
+    {
+        try
+        {
+            var response = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, url));
+
+            if (response.IsSuccessStatusCode)
+            {
+
+               return true;
+            }
+            return false;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error checking file at {url}: {ex.Message}");
+            return false;
+        }
+    }
