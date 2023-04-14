@@ -11,6 +11,19 @@ if (args.Length < 2 || !DateTime.TryParse(args[0], out DateTime startDate) || !D
     endDate = new DateTime(2023, 4, 9);
 }
 
+
+/*
+
+Figure out how to iterate through each day, and find the first file that exists.
+
+Then scan forward 1 hour + or - 5 minutes to see if the next file exists.
+
+Check for the next file 1 hour + or - 5 minutes after that.
+
+Proceed until you have 24 hours of files.
+
+*/
+
 var matchingFiles = new List<(string url, long fileName)>();
 var httpClient = new HttpClient();
 int totalSeconds = (int)(endDate - startDate).TotalSeconds;
