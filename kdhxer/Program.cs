@@ -24,34 +24,38 @@ Proceed until you have 24 hours of files.
 
 */
 
+var httpClientHandler = new HttpClientHandler()
+{
+    UseProxy = false, // disable proxy to avoid unnecessary overhead
+    MaxConnectionsPerServer = 10 // maximum number of connections per server
+};
+
+var httpClient = new HttpClient(httpClientHandler);
+httpClient.DefaultRequestHeaders.ConnectionClose = false;
 
 var matchingFiles = new List<(string url, long fileName)>();
-var httpClient = new HttpClient();
 
 // $"https://kdhx.org/archive/files/{currentTimestamp}.mp3";
 
 // iterate through each day between startDate and endDate
 for (DateTime current = startDate; current <= endDate; current = current.AddDays(1))
 {
-
+    Console.WriteLine($"Searching Day {current.ToShortDateString()}");
     var secondsToSearch = await GenerateFirstHourSearch(current);
 
 
 
-    // iterate through each unix second in the list
     foreach (var currentTimestamp in secondsToSearch)
     {
         var url = $"https://kdhx.org/archive/files/{currentTimestamp}.mp3";
-
         if (await CheckFileAsync(httpClient, url, currentTimestamp))
         {
-
             matchingFiles.Add((url, currentTimestamp));
             Console.WriteLine($"Found file at {url}");
             break;
         }
-
     }
+
 
     // once we have a file, see if there is 1 an hour after that
     if (matchingFiles.Count > 0)
@@ -64,26 +68,37 @@ for (DateTime current = startDate; current <= endDate; current = current.AddDays
         if (await CheckFileAsync(httpClient, url, nextFile))
         {
             matchingFiles.Add((url, nextFile));
-            Console.WriteLine($"Found file at {url}");
-        }else{
-            // check every second 5 minutes before and after
-            for (int i = 1; i <= 300; i++)
+            Console.WriteLine($"First File Found.");
+            Console.WriteLine($"Searching by Hour.");
+
+            //check the next hour after that until 24 hours have passed
+            for (int i = 1; i <= 22; i++)
             {
-                var urlBefore = $"https://kdhx.org/archive/files/{nextFile - i}.mp3";
-                var urlAfter = $"https://kdhx.org/archive/files/{nextFile + i}.mp3";
+                var nextHour = nextFile + (3600 * i);
+                var nextHourUrl = $"https://kdhx.org/archive/files/{nextHour}.mp3";
 
-                if (await CheckFileAsync(httpClient, urlBefore, nextFile - i))
+                if (await CheckFileAsync(httpClient, nextHourUrl, nextHour))
                 {
-                    matchingFiles.Add((urlBefore, nextFile - i));
-                    Console.WriteLine($"Found file at {urlBefore}");
-                    break;
+                    matchingFiles.Add((nextHourUrl, nextHour));
+                    continue;
                 }
-
-                if (await CheckFileAsync(httpClient, urlAfter, nextFile + i))
+                else
                 {
-                    matchingFiles.Add((urlAfter, nextFile + i));
-                    Console.WriteLine($"Found file at {urlAfter}");
-                    break;
+                    Console.WriteLine($"Searching By Second");
+                    //start checking every second until you find the next file
+                    for (int j = 1; j <= 3610; j++)
+                    {
+                        var fuzzyNexthour = nextHour - 10;
+                        var nextSecond = fuzzyNexthour + j;
+                        var nextSecondUrl = $"https://kdhx.org/archive/files/{nextSecond}.mp3";
+
+                        if (await CheckFileAsync(httpClient, nextSecondUrl, nextSecond))
+                        {
+                            matchingFiles.Add((nextSecondUrl, nextSecond));
+                            break;
+                        }
+                    }
+                    continue;
                 }
             }
         }
@@ -94,51 +109,57 @@ for (DateTime current = startDate; current <= endDate; current = current.AddDays
 }
 
 
-    async Task<List<long>> GenerateFirstHourSearch(DateTime startDate)
+Console.WriteLine($"Found {matchingFiles.Count} files");
+
+async Task<List<long>> GenerateFirstHourSearch(DateTime startDate)
+{
+    // Generate a list of all unix Seconds between 00:00:00 and 1:00:00 CDT
+    // Set the time zone to Central Daylight Time (CDT)
+    TimeZoneInfo cdt = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
+
+    // Set the start and end times
+    DateTime start = new DateTime(2023, startDate.Month, startDate.Day, 0, 0, 0, DateTimeKind.Unspecified);
+    DateTime end = new DateTime(2023, startDate.Month, startDate.Day, 1, 0, 0, DateTimeKind.Unspecified);
+
+    // Convert the start and end times to the CDT time zone
+    start = TimeZoneInfo.ConvertTimeToUtc(start, cdt);
+    end = TimeZoneInfo.ConvertTimeToUtc(end, cdt);
+
+    // Generate the list of Unix seconds
+    List<long> unixSeconds = new List<long>();
+    for (DateTime current = start; current < end; current = current.AddSeconds(1))
     {
-        // Generate a list of all unix Seconds between 00:00:00 and 1:00:00 CDT
-        // Set the time zone to Central Daylight Time (CDT)
-        TimeZoneInfo cdt = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
-
-        // Set the start and end times
-        DateTime start = new DateTime(2023, startDate.Month, startDate.Day, 0, 0, 0, DateTimeKind.Unspecified);
-        DateTime end = new DateTime(2023, 4, 14, 1, 0, 0, DateTimeKind.Unspecified);
-
-        // Convert the start and end times to the CDT time zone
-        start = TimeZoneInfo.ConvertTimeToUtc(start, cdt);
-        end = TimeZoneInfo.ConvertTimeToUtc(end, cdt);
-
-        // Generate the list of Unix seconds
-        List<long> unixSeconds = new List<long>();
-        for (DateTime current = start; current < end; current = current.AddSeconds(1))
-        {
-            unixSeconds.Add((long)(current - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds);
-        }
-
-        return unixSeconds;
-
-
+        unixSeconds.Add((long)(current - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds);
     }
 
+    return unixSeconds;
+
+
+}
 
 
 
-    async Task<bool> CheckFileAsync(HttpClient httpClient, string url, long fileName)
+
+async Task<bool> CheckFileAsync(HttpClient httpClient, string url, long fileName)
+{
+    try
     {
-        try
-        {
-            var response = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, url));
+        var response = await httpClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, url));
 
-            if (response.IsSuccessStatusCode)
-            {
-
-               return true;
-            }
-            return false;
-        }
-        catch (Exception ex)
+        if (response.IsSuccessStatusCode)
         {
-            Console.WriteLine($"Error checking file at {url}: {ex.Message}");
-            return false;
+            // turn filename into datetime local, output to console
+            Console.WriteLine($"Found file at {url} - {DateTimeOffset.FromUnixTimeSeconds(fileName).DateTime.ToLocalTime()}");
+
+
+
+            return true;
         }
+        return false;
     }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error checking file at {url}: {ex.Message}");
+        return false;
+    }
+}
