@@ -1,8 +1,10 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Net.Http;
-using System.Threading.Tasks;
+﻿
+using System.Globalization;
+
+using NAudio.Lame;
+using NAudio.Wave;
+
+
 
 if (args.Length < 2 || !DateTime.TryParse(args[0], out DateTime startDate) || !DateTime.TryParse(args[1], out DateTime endDate))
 {
@@ -103,6 +105,10 @@ var tasks = Enumerable.Range(0, (endDate - startDate).Days + 1)
 await Task.WhenAll(tasks);
 
 await DownloadFiles(matchingFiles);
+
+await SplitAndCombine($@"H:\KDHX\");
+
+
 
 async Task AddFileToList(List<(string url, long fileName)> matchingFiles, long foundSecond)
 {
@@ -214,7 +220,7 @@ async Task DownloadFiles(List<(string url, long fileName)> matchingFiles)
                     }
                     var readableFileName = DateTimeOffset.FromUnixTimeSeconds(file.fileName).DateTime.ToLocalTime().ToString("yyyy-MM-dd HH-mm-ss");
                     var stream = await response.Content.ReadAsStreamAsync();
-                    using (var fileStream = File.Create($@"H:\KDHX\{readableFileName}.mp3"))
+                    using (var fileStream = System.IO.File.Create($@"H:\KDHX\{readableFileName}.mp3"))
                     {
                         await stream.CopyToAsync(fileStream);
                     }
@@ -257,8 +263,8 @@ async Task<List<long>> GenerateFirstHourSearch(DateTime startDate)
     TimeZoneInfo cdt = TimeZoneInfo.FindSystemTimeZoneById("Central Standard Time");
 
     // Set the start and end times
-    DateTime start = new DateTime(2023, startDate.Month, startDate.Day, 0, 0, 0, DateTimeKind.Unspecified);
-    DateTime end = new DateTime(2023, startDate.Month, startDate.Day, 1, 0, 0, DateTimeKind.Unspecified);
+    DateTime start = new DateTime(startDate.Year, startDate.Month, startDate.Day, 0, 0, 0, DateTimeKind.Unspecified);
+    DateTime end = new DateTime(startDate.Year, startDate.Month, startDate.Day, 1, 0, 0, DateTimeKind.Unspecified);
 
     // Convert the start and end times to the CDT time zone
     start = TimeZoneInfo.ConvertTimeToUtc(start, cdt);
@@ -303,3 +309,210 @@ async Task<bool> CheckFileAsync(HttpClient httpClient, string url, long fileName
         return false;
     }
 }
+
+
+async Task SplitAndCombine(string directory)
+{
+    // Get all the files in the directory
+    var files = Directory.GetFiles(directory);
+
+    foreach (var file in files)
+    {
+        // Get the start time of the recording from the file name
+        var startTime = DateTime.ParseExact(Path.GetFileNameWithoutExtension(file), "yyyy-MM-dd HH-mm-ss", null);
+
+        // Calculate the start time of the current hour
+        var currentHour = startTime.Date.AddHours(startTime.Hour);
+
+        // Set the output file name to be at the start of the current hour
+        var outputFile = Path.Combine(directory, $@"output\{currentHour.ToString("yyyy-MM-dd HH")}-00-00.mp3");
+
+         //create the output directory if it doesn't exist
+    if (!Directory.Exists(Path.Combine(directory, "output")))
+    {
+        Directory.CreateDirectory(Path.Combine(directory, "output"));
+    }
+
+        
+
+        // Open the input file and output file streams
+        using var reader = new Mp3FileReader(file);
+        using var writer = new LameMP3FileWriter(outputFile, reader.WaveFormat, LAMEPreset.VBR_90);
+
+        // Convert the input file to the output format and write it to the output file
+        var resampler = new MediaFoundationResampler(reader, new WaveFormat(44100, 16, 2));
+        while (true)
+        {
+            var buffer = new byte[resampler.WaveFormat.AverageBytesPerSecond * 4];
+            var bytesRead = resampler.Read(buffer, 0, buffer.Length);
+
+            if (bytesRead == 0)
+            {
+                break;
+            }
+
+            writer.Write(buffer, 0, bytesRead);
+        }
+    }
+}
+
+
+// use nAudio to combine all of the mp3 files in the directory into 1 file
+async Task CombineMp3Files(string directory)
+{
+
+    //get the mp3 files from the directory 1 day at a time, the filenames are datetimes in this format: 2023-04-11 00-00-02.mp3
+    var files = Directory.GetFiles(directory, "*.mp3").OrderBy(f => f).ToList();
+
+    //use the name of the first File to name the output file
+    string outputFile = Path.GetFileNameWithoutExtension(files.First());
+
+
+
+    //create the output directory if it doesn't exist
+    if (!Directory.Exists(Path.Combine(directory, "output")))
+    {
+        Directory.CreateDirectory(Path.Combine(directory, "output"));
+    }
+
+    string outputFilePath = Path.Combine(directory, $@"output\{outputFile}.mp3");
+
+
+    using (var fileStream = System.IO.File.Create(outputFilePath))
+    {
+        foreach (var file in files)
+        {
+
+            // do not change sample rate or bit depth
+            using (var reader = new Mp3FileReader(file))
+            {
+                await reader.CopyToAsync(fileStream);
+            }
+        }
+    }
+
+
+
+
+}
+
+// use nAudio to split the mp3 file into 1 hour files according to the clock hour
+async Task SplitByClockHour(string singleMp3File)
+{
+    // Open the singleMp3File in nAudio
+    using (var reader = new Mp3FileReader(singleMp3File))
+    {
+        // Get the date from the filename
+        var fileName = Path.GetFileNameWithoutExtension(singleMp3File);
+        var dateTime = DateTimeOffset.ParseExact(fileName, "yyyy-MM-dd HH-mm-ss", CultureInfo.InvariantCulture).DateTime.ToLocalTime();
+
+        // Get the start time of the first hour and the end time of the last hour
+        var firstHourStart = dateTime;
+        var lastHourEnd = dateTime.Date.AddHours(23);
+
+        // Initialize variables for each hour's start and end times, and a counter for the output file names
+        var hourStart = firstHourStart;
+        var hourEnd = hourStart.AddHours(1);
+        var count = 1;
+
+        // Read and write audio data for each hour
+        while (hourEnd <= lastHourEnd)
+        {
+            // Create the output file name based on the hour start time
+            var outputFile = $"Final-{hourStart:yyyy-MM-dd HH-mm-ss}.mp3";
+
+            // Open a new Mp3FileWriter for the output file
+            using (var writer = System.IO.File.Create(outputFile))
+            {
+                // Write audio data from the input file for the current hour
+                while (dateTime.Add(reader.CurrentTime) < hourEnd)
+                {
+                    var frame = reader.ReadNextFrame();
+                    if (frame == null) break; // End of input file
+                    await writer.WriteAsync(frame.RawData, 0, frame.RawData.Length);
+                }
+            }
+
+            // Update the hour start and end times for the next iteration
+            hourStart = hourEnd;
+            hourEnd = hourStart.AddHours(1);
+            count++;
+        }
+    }
+}
+
+
+
+
+
+
+
+
+async Task TagMp3Files(string directory, string outputFile)
+{
+
+    //get all mp3 files in the directory
+    var files = Directory.GetFiles(directory, "*.mp3").OrderBy(f => f).ToList();
+
+    foreach (var file in files)
+    {
+        // using (var fileStream = System.IO.File.Create( Path.Combine(directory, $@"output\{outputFile}.mp3")))
+        // {
+        //     using (var reader = new Mp3FileReader(file))
+        //     {
+        //         await reader.CopyToAsync(fileStream);
+        //     }
+
+
+        // }
+
+        //set title to Human Readable DateTime using the Filename in this format: 2023-04-11 00-00-02.mp3
+        var fileName = Path.GetFileNameWithoutExtension(file);
+        var dateTime = DateTimeOffset.ParseExact(fileName, "yyyy-MM-dd HH-mm-ss", CultureInfo.InvariantCulture).DateTime.ToLocalTime();
+        SetTitle(file, dateTime.ToString("yyyy-MM-dd HH:mm:ss"));
+
+        // set the Album to Kdhx
+        SetAlbum(file, "88.1 KDHX");
+
+        // set the Artist to the show Name
+        SetArtist(file, "KDHX DJ");
+
+        SetDateTime(file, dateTime);
+
+
+    }
+
+
+}
+
+
+
+void SetTitle(string filePath, string title)
+{
+    using var mp3File = TagLib.File.Create(filePath);
+    mp3File.Tag.Title = title;
+    mp3File.Save();
+}
+
+void SetArtist(string filePath, string artist)
+{
+    using var mp3File = TagLib.File.Create(filePath);
+    mp3File.Tag.Performers = new[] { artist };
+    mp3File.Save();
+}
+
+void SetAlbum(string filePath, string album)
+{
+    using var mp3File = TagLib.File.Create(filePath);
+    mp3File.Tag.Album = album;
+    mp3File.Save();
+}
+
+void SetDateTime(string filePath, DateTime dateTime)
+{
+    using var mp3File = TagLib.File.Create(filePath);
+    mp3File.Tag.DateTagged = dateTime;
+    mp3File.Save();
+}
+
+
