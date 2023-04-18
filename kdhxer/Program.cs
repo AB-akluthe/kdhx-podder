@@ -108,8 +108,6 @@ await DownloadFiles(matchingFiles);
 
 await SplitAndCombine($@"H:\KDHX\");
 
-
-
 async Task AddFileToList(List<(string url, long fileName)> matchingFiles, long foundSecond)
 {
     if (foundSecond > 0)
@@ -357,98 +355,7 @@ async Task SplitAndCombine(string directory)
 }
 
 
-// use nAudio to combine all of the mp3 files in the directory into 1 file
-async Task CombineMp3Files(string directory)
-{
-
-    //get the mp3 files from the directory 1 day at a time, the filenames are datetimes in this format: 2023-04-11 00-00-02.mp3
-    var files = Directory.GetFiles(directory, "*.mp3").OrderBy(f => f).ToList();
-
-    //use the name of the first File to name the output file
-    string outputFile = Path.GetFileNameWithoutExtension(files.First());
-
-
-
-    //create the output directory if it doesn't exist
-    if (!Directory.Exists(Path.Combine(directory, "output")))
-    {
-        Directory.CreateDirectory(Path.Combine(directory, "output"));
-    }
-
-    string outputFilePath = Path.Combine(directory, $@"output\{outputFile}.mp3");
-
-
-    using (var fileStream = System.IO.File.Create(outputFilePath))
-    {
-        foreach (var file in files)
-        {
-
-            // do not change sample rate or bit depth
-            using (var reader = new Mp3FileReader(file))
-            {
-                await reader.CopyToAsync(fileStream);
-            }
-        }
-    }
-
-
-
-
-}
-
-// use nAudio to split the mp3 file into 1 hour files according to the clock hour
-async Task SplitByClockHour(string singleMp3File)
-{
-    // Open the singleMp3File in nAudio
-    using (var reader = new Mp3FileReader(singleMp3File))
-    {
-        // Get the date from the filename
-        var fileName = Path.GetFileNameWithoutExtension(singleMp3File);
-        var dateTime = DateTimeOffset.ParseExact(fileName, "yyyy-MM-dd HH-mm-ss", CultureInfo.InvariantCulture).DateTime.ToLocalTime();
-
-        // Get the start time of the first hour and the end time of the last hour
-        var firstHourStart = dateTime;
-        var lastHourEnd = dateTime.Date.AddHours(23);
-
-        // Initialize variables for each hour's start and end times, and a counter for the output file names
-        var hourStart = firstHourStart;
-        var hourEnd = hourStart.AddHours(1);
-        var count = 1;
-
-        // Read and write audio data for each hour
-        while (hourEnd <= lastHourEnd)
-        {
-            // Create the output file name based on the hour start time
-            var outputFile = $"Final-{hourStart:yyyy-MM-dd HH-mm-ss}.mp3";
-
-            // Open a new Mp3FileWriter for the output file
-            using (var writer = System.IO.File.Create(outputFile))
-            {
-                // Write audio data from the input file for the current hour
-                while (dateTime.Add(reader.CurrentTime) < hourEnd)
-                {
-                    var frame = reader.ReadNextFrame();
-                    if (frame == null) break; // End of input file
-                    await writer.WriteAsync(frame.RawData, 0, frame.RawData.Length);
-                }
-            }
-
-            // Update the hour start and end times for the next iteration
-            hourStart = hourEnd;
-            hourEnd = hourStart.AddHours(1);
-            count++;
-        }
-    }
-}
-
-
-
-
-
-
-
-
-async Task TagMp3Files(string directory, string outputFile)
+async Task TagMp3Files(string directory)
 {
 
     //get all mp3 files in the directory
@@ -456,16 +363,6 @@ async Task TagMp3Files(string directory, string outputFile)
 
     foreach (var file in files)
     {
-        // using (var fileStream = System.IO.File.Create( Path.Combine(directory, $@"output\{outputFile}.mp3")))
-        // {
-        //     using (var reader = new Mp3FileReader(file))
-        //     {
-        //         await reader.CopyToAsync(fileStream);
-        //     }
-
-
-        // }
-
         //set title to Human Readable DateTime using the Filename in this format: 2023-04-11 00-00-02.mp3
         var fileName = Path.GetFileNameWithoutExtension(file);
         var dateTime = DateTimeOffset.ParseExact(fileName, "yyyy-MM-dd HH-mm-ss", CultureInfo.InvariantCulture).DateTime.ToLocalTime();
@@ -479,9 +376,7 @@ async Task TagMp3Files(string directory, string outputFile)
 
         SetDateTime(file, dateTime);
 
-
     }
-
 
 }
 
