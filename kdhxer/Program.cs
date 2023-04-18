@@ -7,8 +7,10 @@ using System.Threading.Tasks;
 if (args.Length < 2 || !DateTime.TryParse(args[0], out DateTime startDate) || !DateTime.TryParse(args[1], out DateTime endDate))
 {
     Console.WriteLine("Usage: FileSearch <startDate> <endDate>");
-    startDate = new DateTime(2023, 4, 3);
-    endDate = new DateTime(2023, 4, 9);
+
+    //today at midnight if they didnt pass
+    startDate = DateTime.Today;
+    endDate = DateTime.Today.AddDays(1);
 }
 
 
@@ -24,92 +26,234 @@ Proceed until you have 24 hours of files.
 
 */
 
-var httpClientHandler = new HttpClientHandler()
-{
-    UseProxy = false, // disable proxy to avoid unnecessary overhead
-    MaxConnectionsPerServer = 10 // maximum number of connections per server
-};
 
-var httpClient = new HttpClient(httpClientHandler);
-httpClient.DefaultRequestHeaders.ConnectionClose = false;
 
-var matchingFiles = new List<(string url, long fileName)>();
 
 // $"https://kdhx.org/archive/files/{currentTimestamp}.mp3";
 
+var lockObj = new object();
+
+var matchingFiles = new List<(string url, long fileName)>();
+
 // iterate through each day between startDate and endDate
-for (DateTime current = startDate; current <= endDate; current = current.AddDays(1))
-{
-    Console.WriteLine($"Searching Day {current.ToShortDateString()}");
-    var secondsToSearch = await GenerateFirstHourSearch(current);
-
-
-
-    foreach (var currentTimestamp in secondsToSearch)
+// iterate through each day between startDate and endDate
+var tasks = Enumerable.Range(0, (endDate - startDate).Days + 1)
+    .Select(index => Task.Run(async () =>
     {
-        var url = $"https://kdhx.org/archive/files/{currentTimestamp}.mp3";
-        if (await CheckFileAsync(httpClient, url, currentTimestamp))
+        var current = startDate.AddDays(index);
+
+        var httpClientHandler = new HttpClientHandler()
         {
-            matchingFiles.Add((url, currentTimestamp));
-            Console.WriteLine($"Found file at {url}");
-            break;
+            UseProxy = false, // disable proxy to avoid unnecessary overhead
+            MaxConnectionsPerServer = 10, // maximum number of connections per server
+            AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate // enable gzip and deflate compression
+        };
+
+        var httpClient = new HttpClient(httpClientHandler);
+        httpClient.DefaultRequestHeaders.ConnectionClose = false;
+
+
+        Console.WriteLine($"Searching Day {current.ToShortDateString()}");
+        var secondsToSearch = await GenerateFirstHourSearch(current);
+
+        //check to find the first file in the first hour
+        var firstFile = await CheckFileBySecondAsync(httpClient, secondsToSearch[0], secondsToSearch[secondsToSearch.Count - 1]);
+
+        if (firstFile > 0)
+        {
+            await AddFileToList(matchingFiles, firstFile);
+
+        }
+
+        //for the next 23 hours, check to see if the file exists
+        for (int i = 1; i < 24; i++)
+        {
+            //startSecond will be firstFile + 1 hour * i if i=1 or else it will be the last file in MatchingFiles + 1 hour
+            long startSecond = 0;
+            if (i == 1)
+            {
+                startSecond = firstFile + 3600;
+            }
+            else
+            {
+                startSecond = matchingFiles[matchingFiles.Count - 1].fileName + 3600;
+            }
+
+            var endSecond = startSecond + 3600;
+            var foundSecond = await CheckFileByHourAsync(httpClient, startSecond, endSecond);
+            if (foundSecond > 0)
+            {
+                await AddFileToList(matchingFiles, foundSecond);
+            }
+            else
+            {
+                // update the progress
+                lock (lockObj)
+                {
+
+                    Console.WriteLine($"Could not find file for {DateTimeOffset.FromUnixTimeSeconds(startSecond).DateTime.ToLocalTime()}");
+                }
+            }
+        }
+
+        Console.WriteLine($"Found {matchingFiles.Count} files");
+
+
+    }
+));
+
+await Task.WhenAll(tasks);
+
+await DownloadFiles(matchingFiles);
+
+async Task AddFileToList(List<(string url, long fileName)> matchingFiles, long foundSecond)
+{
+    if (foundSecond > 0)
+    {
+        // update the progress
+        lock (lockObj)
+        {
+            Console.WriteLine($"Found file at {foundSecond} - {DateTimeOffset.FromUnixTimeSeconds(foundSecond).DateTime.ToLocalTime()}");
+        }
+        matchingFiles.Add(($"https://kdhx.org/archive/files/{foundSecond}.mp3", foundSecond));
+
+    }
+    else
+    {
+        // update the progress
+        lock (lockObj)
+        {
+            Console.WriteLine($"Could not find file for {DateTimeOffset.FromUnixTimeSeconds(foundSecond).DateTime.ToLocalTime()}");
         }
     }
+}
 
 
-    // once we have a file, see if there is 1 an hour after that
-    if (matchingFiles.Count > 0)
+//Function To Search by Second
+async Task<long> CheckFileBySecondAsync(HttpClient httpClient, long startSeconds, long endSeconds)
+{
+    for (long current = startSeconds; current <= endSeconds; current++)
     {
-        var lastFile = matchingFiles[^1];
-        var nextFile = lastFile.fileName + 3600;
-
-        var url = $"https://kdhx.org/archive/files/{nextFile}.mp3";
-
-        if (await CheckFileAsync(httpClient, url, nextFile))
+        var url = $"https://kdhx.org/archive/files/{current}.mp3";
+        if (await CheckFileAsync(httpClient, url, current))
         {
-            matchingFiles.Add((url, nextFile));
-            Console.WriteLine($"First File Found.");
-            Console.WriteLine($"Searching by Hour.");
+            return current;
+        }
+    }
+    return 0;
+}
 
-            //check the next hour after that until 24 hours have passed
-            for (int i = 1; i <= 22; i++)
+//Function to Search by Hour
+async Task<long> CheckFileByHourAsync(HttpClient httpClient, long startSeconds, long endSeconds)
+{
+    for (long current = startSeconds; current <= endSeconds; current += 3600)
+    {
+        var url = $"https://kdhx.org/archive/files/{current}.mp3";
+        if (await CheckFileAsync(httpClient, url, current))
+        {
+            return current;
+        }
+        else
+        {
+            //check by the second for 10 minutes before current until you find it
+            var startSecond = current - 3;
+            var endSecond = current + 600;
+            var foundSecond = await CheckFileBySecondAsync(httpClient, startSecond, endSecond);
+            if (foundSecond > 0)
             {
-                var nextHour = nextFile + (3600 * i);
-                var nextHourUrl = $"https://kdhx.org/archive/files/{nextHour}.mp3";
-
-                if (await CheckFileAsync(httpClient, nextHourUrl, nextHour))
-                {
-                    matchingFiles.Add((nextHourUrl, nextHour));
-                    continue;
-                }
-                else
-                {
-                    Console.WriteLine($"Searching By Second");
-                    //start checking every second until you find the next file
-                    for (int j = 1; j <= 3610; j++)
-                    {
-                        var fuzzyNexthour = nextHour - 10;
-                        var nextSecond = fuzzyNexthour + j;
-                        var nextSecondUrl = $"https://kdhx.org/archive/files/{nextSecond}.mp3";
-
-                        if (await CheckFileAsync(httpClient, nextSecondUrl, nextSecond))
-                        {
-                            matchingFiles.Add((nextSecondUrl, nextSecond));
-                            break;
-                        }
-                    }
-                    continue;
-                }
+                return foundSecond;
             }
         }
     }
 
-
-
+    return 0;
 }
 
 
-Console.WriteLine($"Found {matchingFiles.Count} files");
+
+async Task DownloadFiles(List<(string url, long fileName)> matchingFiles)
+{
+
+
+
+    // set the maximum number of concurrent downloads
+    const int MaxConcurrentDownloads = 10;
+
+    // create a semaphore to limit the number of concurrent downloads
+    var semaphore = new SemaphoreSlim(MaxConcurrentDownloads);
+
+    // create a list to hold the download tasks
+    var downloadTasks = new List<Task>();
+
+    // for each file in matchingFiles, create a download task
+    foreach (var file in matchingFiles)
+    {
+        // acquire a semaphore slot
+        await semaphore.WaitAsync();
+
+        // create a download task
+        var task = Task.Run(async () =>
+        {
+            try
+            {
+
+                var httpClientHandler = new HttpClientHandler()
+                {
+                    UseProxy = false, // disable proxy to avoid unnecessary overhead
+                    MaxConnectionsPerServer = 10, // maximum number of connections per server
+                    AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate // enable gzip and deflate compression
+
+
+                };
+
+                var httpClient = new HttpClient(httpClientHandler);
+                httpClient.DefaultRequestHeaders.ConnectionClose = false;
+                httpClient.Timeout = TimeSpan.FromMinutes(15);
+
+                var response = await httpClient.GetAsync(file.url);
+                if (response.IsSuccessStatusCode)
+                {
+                    lock (lockObj)
+                    {
+                        Console.WriteLine($"Starting {file.url}");
+                    }
+                    var readableFileName = DateTimeOffset.FromUnixTimeSeconds(file.fileName).DateTime.ToLocalTime().ToString("yyyy-MM-dd HH-mm-ss");
+                    var stream = await response.Content.ReadAsStreamAsync();
+                    using (var fileStream = File.Create($@"H:\KDHX\{readableFileName}.mp3"))
+                    {
+                        await stream.CopyToAsync(fileStream);
+                    }
+                }
+                else
+                {
+                    // update the progress
+                    lock (lockObj)
+                    {
+                        Console.WriteLine($"Error: {response.StatusCode} - {response.ReasonPhrase}");
+                    }
+                }
+            }
+            finally
+            {
+                // release the semaphore slot
+                // update the progress
+                lock (lockObj)
+                {
+                    Console.WriteLine($"Downloaded {file.url}");
+                }
+                semaphore.Release();
+            }
+        });
+
+        // add the task to the list
+        downloadTasks.Add(task);
+    }
+
+    // wait for all download tasks to complete
+    await Task.WhenAll(downloadTasks);
+
+
+}
 
 async Task<List<long>> GenerateFirstHourSearch(DateTime startDate)
 {
@@ -133,11 +277,7 @@ async Task<List<long>> GenerateFirstHourSearch(DateTime startDate)
     }
 
     return unixSeconds;
-
-
 }
-
-
 
 
 async Task<bool> CheckFileAsync(HttpClient httpClient, string url, long fileName)
@@ -148,18 +288,24 @@ async Task<bool> CheckFileAsync(HttpClient httpClient, string url, long fileName
 
         if (response.IsSuccessStatusCode)
         {
-            // turn filename into datetime local, output to console
-            Console.WriteLine($"Found file at {url} - {DateTimeOffset.FromUnixTimeSeconds(fileName).DateTime.ToLocalTime()}");
-
-
-
+            // update the progress
+            lock (lockObj)
+            {
+                // turn filename into datetime local, output to console
+                Console.WriteLine($"Found file at {url} - {DateTimeOffset.FromUnixTimeSeconds(fileName).DateTime.ToLocalTime()}");
+                // update the progress
+            }
             return true;
         }
         return false;
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"Error checking file at {url}: {ex.Message}");
+        // update the progress
+        lock (lockObj)
+        {
+            Console.WriteLine($"Error checking file at {url}: {ex.Message}");
+        }
         return false;
     }
 }
