@@ -13,7 +13,6 @@ if (args.Length < 2 || !DateTime.TryParse(args[0], out DateTime startDate) || !D
     endDate = DateTime.Today.AddDays(1);
 }
 
-
 /*
 
 Figure out how to iterate through each day, and find the first file that exists.
@@ -26,16 +25,12 @@ Proceed until you have 24 hours of files.
 
 */
 
-
-
-
 // $"https://kdhx.org/archive/files/{currentTimestamp}.mp3";
 
 var lockObj = new object();
 
 var matchingFiles = new List<(string url, long fileName)>();
 
-// iterate through each day between startDate and endDate
 // iterate through each day between startDate and endDate
 var tasks = Enumerable.Range(0, (endDate - startDate).Days + 1)
     .Select(index => Task.Run(async () =>
@@ -96,8 +91,11 @@ var tasks = Enumerable.Range(0, (endDate - startDate).Days + 1)
             }
         }
 
-        Console.WriteLine($"Found {matchingFiles.Count} files");
-
+        // update the progress
+        lock (lockObj)
+        {
+            Console.WriteLine($"Found {matchingFiles.Count} files");
+        }
 
     }
 ));
