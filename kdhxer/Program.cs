@@ -126,7 +126,6 @@ async Task AddFileToList(List<(string url, long fileName)> matchingFiles, long f
     }
 }
 
-
 //Function To Search by Second
 async Task<long> CheckFileBySecondAsync(HttpClient httpClient, long startSeconds, long endSeconds)
 {
@@ -166,8 +165,6 @@ async Task<long> CheckFileByHourAsync(HttpClient httpClient, long startSeconds, 
 
     return 0;
 }
-
-
 
 async Task DownloadFiles(List<(string url, long fileName)> matchingFiles)
 {
@@ -276,7 +273,6 @@ async Task<List<long>> GenerateFirstHourSearch(DateTime startDate)
 
     return unixSeconds;
 }
-
 
 async Task<bool> CheckFileAsync(HttpClient httpClient, string url, long fileName)
 {
